@@ -20,10 +20,13 @@
   roles:
       - magento-deploy
 
-  post_tasks:
+  tasks:
     - name: Start PHP-FPM, Nginx
       systemd: name={{item}} state=started
       with_items:
          - php7.0-fpm
          - nginx
     #- debug: var=ansible_date_time.date
+
+  post_tasks:
+    - include_playbook: website_status.yaml

@@ -3,7 +3,6 @@
 - import_playbook: playbooks/magento_stack.yaml
 - import_playbook: playbooks/website_status.yaml
 - import_playbook: playbooks/meganto2_stack_bg.yaml
-- import_playbook: playbooks/website_status.yaml
 - import_playbook: playbooks/ami_teminstanse.yaml
 - import_playbook: playbooks/magento2_stack.yaml
 - import_playbook: playbooks/cloudfront_stack.yaml

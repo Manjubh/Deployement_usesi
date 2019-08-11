@@ -5,6 +5,9 @@
   gather_facts: False
   become: yes
   become_method: sudo
+  vars:
+    DEPLOYMENT_TEAM: ""
+    DEPLOYMENT_JENKINS_JOB: ""
 
   tasks:
     - name: Check website is up
@@ -30,6 +33,13 @@
         channel: "{{ DEPLOYMENT_LOGS }}"
         msg: "*Magento Deployment*: In New-Instance: {{ temp_ec2_output.instances[0].public_ip }}:- *Success*\n"
       when: website_check is succeeded
+
+    - name: Re-Initiate the playbook from USESI playbook #Rollback 2
+      slack:
+        token: "{{ SLACK_TOKEN }}"
+        channel: "{{ DEPLOYMENT_TEAM }}"
+        msg: "Initiating {{ DEPLOYMENT_JENKINS_JOB }} job of USESI auto-scaling after magento2 failure"
+      when: website_check is failed
 
     - fail:
         msg: "*Please check the Jenkins consoleOutput & Template instance for magento website error*."

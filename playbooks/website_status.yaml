@@ -1,0 +1,36 @@
+---
+- name: local
+  hosts: 127.0.0.1
+  connection: local
+  gather_facts: False
+  become: yes
+  become_method: sudo
+
+  tasks:
+    - name: Check website is up
+      uri:
+        url: http://{{ temp_ec2_output.instances[0].public_ip }}
+      retries: 30
+      delay: 10
+      register: website_check
+      until: website_check.status == 200
+      ignore_errors: True
+    - debug: var=website_check
+
+    - name: Failed Notification
+      slack:
+        token: "{{ SLACK_TOKEN }}"
+        channel: "{{ SLACK_CHANNEL }}"
+        msg: "*Deployment failed*: In New-Instance-{{ temp_ec2_output.instances[0].public_ip }} for branch: {{ BRANCH }}\n"
+      when: website_check is failed
+
+    - name: Success Notification
+      slack:
+        token: "{{ SLACK_TOKEN }}"
+        channel: "{{ DEPLOYMENT_LOGS }}"
+        msg: "*Magento Deployment*: In New-Instance: {{ temp_ec2_output.instances[0].public_ip }}:- *Success*\n"
+      when: website_check is succeeded
+
+    - fail:
+        msg: "*Please check the Jenkins consoleOutput & Template instance for magento website error*."
+      when: website_check is failed

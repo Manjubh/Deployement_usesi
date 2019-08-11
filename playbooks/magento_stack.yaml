@@ -1,0 +1,29 @@
+---
+- name: Set up Magento2 stack on Ubuntu 16.04 for Temp-Instance
+  hosts: Web
+  become: true
+  any_errors_fatal: true
+
+  vars:
+      ansistrano_deploy_to: "{{ DEPLOY_TO }}"
+      ansistrano_keep_releases: 3
+      git_user: "{{ USER }}"
+      git_passwd: "{{ PASSWD }}"
+      branch: "{{ BRANCH }}"   # 'branch' is used in magento ansistrano inside the roles.
+      launch_template_id: "{{ LAUNCH_TEMPLATE_ID }}"
+
+  vars_files:
+      - roles/magento-deploy/vars/vars.yml
+      - roles/magento-deploy/vars/vault.yml
+
+
+  roles:
+      - magento-deploy
+
+  post_tasks:
+    - name: Start PHP-FPM, Nginx
+      systemd: name={{item}} state=started
+      with_items:
+         - php7.0-fpm
+         - nginx
+    #- debug: var=ansible_date_time.date

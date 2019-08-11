@@ -1,0 +1,163 @@
+---
+- name: USESI Deployment Over Auto-Scaling
+  hosts: 127.0.0.1
+  connection: local
+  gather_facts: False
+  become: yes
+  become_method: sudo
+
+  vars:
+      ec2_security_group_ids: []
+      ec2_tags: []
+      DeployEnv: "{{ Environment }}"
+      BackgroundIPs: []
+      BackGroundHost: []
+
+
+  tasks:
+  - name: Gather existing EC2 Details
+    ec2_instance_facts:
+      filters:
+        instance-state-name: running
+        "tag:Name": "{{ EC2INSTANCE_TAGNAME }}"
+      region:   "{{ AWS_REGION }}"
+    register: output
+  - debug: var=output
+
+
+  - name: Collect Security Groups as List
+    set_fact:
+      ec2_security_group_ids: "{{ ec2_security_group_ids }} + [ '{{item.group_id}}' ]"
+    with_items: "{{ output.instances[0].network_interfaces[0].groups }}"
+  - debug:
+      msg: "{{ ec2_security_group_ids }}"
+
+  - name: Collect Temp App instance facts
+    ec2_instance_facts:
+       filters:
+          instance-state-name: running
+          "tag:Name": "{{ EC2INSTANCE_TAGNAME }}-Temp"
+       region:   "{{ AWS_REGION }}"
+    register: TempOutput
+  - debug: var=TempOutput
+
+  - name: Terminating Temp App Instance if exists in AWS console
+    ec2:
+      state: 'absent'
+      instance_ids:  "{{ TempOutput.instances[0].instance_id }}"
+      region: "{{ AWS_REGION }}"
+    when: TempOutput.instances[0].state.name == "running"
+    ignore_errors: yes
+
+  - ec2_instance_facts:
+       filters:
+          instance-state-name: running
+          "tag:Name": "{{ BACKGROUND_INSTANCE_TAGNAME }}"
+       region:   "{{ AWS_REGION }}"
+    register: BgInstanceOutput
+  - debug: var=BgInstanceOutput
+  - set_fact:
+      BackgroundIPs: "{{ BackgroundIPs }} + [ '{{item.network_interfaces[0].association.public_ip }}' ]"
+    with_items: "{{ BgInstanceOutput.instances }}"
+  - debug: var=BackgroundIPs
+
+  - name: Add Public IP to BackGround  group
+    add_host:
+       hostname: "{{ item }}"
+       groups: BackGround
+    with_items: "{{ BackgroundIPs }}"
+    register: BgHostname
+  - debug: var=BgHostname
+
+  - set_fact:
+      BackGroundHost: "{{ BackGroundHost }} + [ '{{ item.add_host.host_name }}' ]"
+    with_items: "{{ BgHostname.results }}"
+  - debug: var=BackGroundHost
+  - include_tasks: pretask.yml
+    vars:
+        BackGroundIp: "{{ BackGroundHost }}"
+
+  - name: Launch Temp App Instance  from AMI
+    ec2:
+      key_name: "{{ output.instances[0].key_name }}"
+      instance_type: "{{ output.instances[0].instance_type }}"
+      image: "{{ output.instances[0].image_id }}"
+      wait: yes
+      group_id: "{{ ec2_security_group_ids }}"
+      count: 1
+      instance_tags:
+        Name: "{{ NAMING_INSTANCE }}-Temp"
+      vpc_subnet_id: "{{ output.instances[0].network_interfaces[0].subnet_id }}"
+      region: "{{ AWS_REGION }}"
+      assign_public_ip: yes
+    register: temp_ec2_output
+  - debug: var=temp_ec2_output
+
+  - name: Slack Notification1
+    slack:
+      token: "{{ SLACK_TOKEN }}"
+      channel: "{{ SLACK_CHANNEL }}"
+      msg: "*{{ DeployEnv }} STARTED*\n
+            Branch: {{ BRANCH }}\n"
+    when: temp_ec2_output.failed == false
+
+  - slack:
+      token: "{{ SLACK_TOKEN }}"
+      channel: "{{ SLACK_CHANNEL }}"
+      msg: "*NEW-INSTANCE-CREATION-FAILED*"
+    when: temp_ec2_output.failed != false
+  - fail:
+      msg: "*Please check the AWS-Console-Management*"
+    when: temp_ec2_output.failed != false
+
+  - name: Add Public IP to Web group
+    add_host:
+      hostname: "{{ temp_ec2_output.instances[0].public_ip }}"
+      groups: Web
+
+   #- name: Notifiy Customer support
+  - include_tasks: mailtrigger1.yml
+    vars:
+      DeployEnv: "{{ Environment }}"
+
+  - name: Wait for instance to listen on port 22
+    wait_for:
+      host: "{{ temp_ec2_output.instances[0].public_ip }}"
+      delay: 180
+      timeout: 200
+      state: started
+      port: 22
+    ignore_errors: yes
+    register: out
+  - debug: var=out
+  #- debug: var=out.state
+  - set_fact:
+         portstatus: "{{ out.state }}"
+  - debug: var=portstatus
+
+  - name: Health-check instances
+    ec2_instance_facts:
+        instance_ids:
+          - '{{ temp_ec2_output.instance_ids[0] }}'
+        region:   "{{ AWS_REGION }}"
+    register: InstanceHealth
+  #- debug: var=InstanceHealth.instances[0].state.name
+
+  - set_fact:
+       Instancestatus: "{{ InstanceHealth.instances[0].state.name }}"
+  - debug: var=Instancestatus
+  - slack:
+      token: "{{ SLACK_TOKEN }}"
+      channel: "{{ SLACK_CHANNEL }}"
+      msg: "*NEW-INSTANCE-HEALTH-CHECK-FAILED*"
+    when: Instancestatus != "running"
+
+  - name: Terminating Temp instance if failed to run   # Rollback 1
+    ec2:
+      state: 'absent'
+      instance_ids:  "{{ temp_ec2_output.instance_ids[0] }}"
+      region: "{{ AWS_REGION }}"
+    when: Instancestatus != "running"
+  - fail:
+      msg: "*Please check the AWS-Console for instance state*"
+    when: Instancestatus != "running"

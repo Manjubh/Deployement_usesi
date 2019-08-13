@@ -6,8 +6,8 @@
   become: yes
   become_method: sudo
   vars:
-    DEPLOYMENT_TEAM: ""
-    DEPLOYMENT_JENKINS_JOB: ""
+    DEPLOYMENT_TEAM: "rollback"
+    DEPLOYMENT_JENKINS_JOB: "runjob"
 
   tasks:
     - name: Check website is up

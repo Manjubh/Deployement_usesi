@@ -1,0 +1,46 @@
+---
+- name: local
+  hosts: 127.0.0.1
+  connection: local
+  gather_facts: False
+  become: yes
+  become_method: sudo
+  vars:
+    DEPLOYMENT_TEAM: "rollback"
+    DEPLOYMENT_JENKINS_JOB: "runjob"
+
+  tasks:
+    - name: Check website is up
+      uri:
+        url: http://{{ temp_ec2_output.instances[0].public_ip }}
+      retries: 30
+      delay: 10
+      register: website_check
+      until: website_check.status == 200
+      ignore_errors: True
+    - debug: var=website_check
+
+    - name: Failed Notification
+      slack:
+        token: "{{ SLACK_TOKEN }}"
+        channel: "{{ SLACK_CHANNEL }}"
+        msg: "*Deployment failed*: In New-Instance-{{ temp_ec2_output.instances[0].public_ip }} for branch: {{ BRANCH }}\n"
+      when: website_check is failed
+
+    - name: Success Notification
+      slack:
+        token: "{{ SLACK_TOKEN }}"
+        channel: "{{ DEPLOYMENT_LOGS }}"
+        msg: "*Magento Deployment*: In New-Instance: {{ temp_ec2_output.instances[0].public_ip }}:- *Success*\n"
+      when: website_check is succeeded
+
+    - name: Re-Initiate the playbook from USESI playbook #Rollback 2
+      slack:
+        token: "{{ SLACK_TOKEN }}"
+        channel: "{{ DEPLOYMENT_TEAM }}"
+        msg: "Initiating {{ DEPLOYMENT_JENKINS_JOB }} job of USESI auto-scaling after magento2 failure"
+      when: website_check is failed
+
+    - fail:
+        msg: "*Please check the Jenkins consoleOutput & Template instance for magento website error*."
+      when: website_check is failed

@@ -1,0 +1,322 @@
+---
+- name: Create AMI from New Temp Instance
+  hosts: 127.0.0.1
+  connection: local
+  gather_facts: yes
+  become: yes
+  become_method: sudo
+
+  vars:
+      launch_template_id: "{{ LAUNCH_TEMPLATE_ID }}"
+      instance_ids:
+        - '{{ asginstanceid }}'
+        - '{{ temp_ec2_output.instance_ids[0]  }}'
+      asginstanceid: []
+      branch: "{{ BRANCH }}"
+      ami: "{{ AMI_NAME }}"
+      Varnishasginstanceid: []
+      varnishIPs: []
+      Rotate: "{{ Rotate_EC2_Instances }}"
+
+  tasks:
+   #AMI from New Temp Instance after magneto deployment
+  - ec2_ami:
+      instance_id: "{{ temp_ec2_output.instance_ids[0] }}"
+      wait: yes
+      name: "{{ AMI_NAME }}-{{ BRANCH }}-{{ ansible_date_time.year }}{{ ansible_date_time.month }}{{ ansible_date_time.day }}{{ ansible_date_time.hour }}{{ ansible_date_time.minute}}"
+      tags:
+         Name: "{{ AMI_NAME }}-{{ BRANCH }}"
+      no_reboot: yes
+    #delegate_facts: True
+    register: ec2_ami_output
+  - slack:
+      token: "{{ SLACK_TOKEN }}"
+      channel: "{{ SLACK_CHANNEL }}"
+      msg: "*AMI creation failed*"
+    when: ec2_ami_output.failed != false
+  - fail:
+      msg: "*Please check the AWS-Console-Management*"
+    when: ec2_ami_output.failed != false
+
+  - debug: var=ec2_ami_output
+  #- debug: var=ec2_ami_output.block_device_mapping["/dev/sda1"].snapshot_id
+  #- debug: var=ec2_ami_output.image_id
+
+  - name:  Terminating Temp instance after AMI creation
+    ec2:
+      state: 'absent'
+      instance_ids:
+          - "{{ temp_ec2_output.instance_ids[0] }}"
+      region: '{{ AWS_REGION }}'
+    when: ec2_ami_output.failed == false
+    register: TerminationOutput
+  - debug: var=TerminationOutput
+  - slack:
+      token: "{{ SLACK_TOKEN }}"
+      channel: "{{ SLACK_CHANNEL }}"
+      msg: "*Temp-Instance Termination got failed*"
+    when: TerminationOutput.failed != false
+  - fail:
+      msg: "*Please check the AWS-Console-Management*"
+    when: TerminationOutput.failed != false
+
+  - command: aws ec2 describe-launch-template-versions --launch-template-id {{ LAUNCH_TEMPLATE_ID }} --versions '$Latest'
+    register: result
+
+  - set_fact:
+      myvar: "{{ result.stdout | from_json }}"
+
+  - set_fact:
+      #myvartemplatedata: "{{ myvar['LaunchTemplateVersions'][0]['LaunchTemplateData'] | combine({'BlockDeviceMappings': [{'DeviceName':'/dev/sda1','Ebs':{'DeleteOnTermination':true,'SnapshotId':ec2_ami_output.block_device_mapping[\"/dev/sda1\"].snapshot_id,'VolumeSize':200,'VolumeType':'gp2'}}],'ImageId':ec2_ami_output.image_id}) }}"
+      myvartemplatedata: "{{
+        myvar['LaunchTemplateVersions'][0]['LaunchTemplateData']
+        | combine({
+        'TagSpecifications':  [{
+            'ResourceType':'instance',
+            'Tags': [{
+              'Value': branch,
+              'Key':'Branch',
+            }]
+          },
+          {
+            'ResourceType':'volume',
+            'Tags': [{
+              'Value': branch,
+              'Key':'Branch',
+            }]
+          },
+          {
+            'ResourceType':'instance',
+            'Tags': [{
+              'Value': ami,
+              'Key':'Name',
+            }]
+          },
+          {
+            'ResourceType':'volume',
+            'Tags': [{
+              'Value': ami,
+              'Key':'Name',
+            }]
+          }],
+          'BlockDeviceMappings': [{
+            'DeviceName':'/dev/sda1',
+            'Ebs':{
+              'DeleteOnTermination':true,
+              'SnapshotId':ec2_ami_output.block_device_mapping[\"/dev/sda1\"].snapshot_id,
+              'VolumeSize':200,
+              'VolumeType':'gp2'
+            }
+          }],
+          'ImageId':ec2_ami_output.image_id
+        })
+      }}"
+      Oldlaunchtemplateversion: "{{ myvar['LaunchTemplateVersions'][0]['VersionNumber'] }}"
+
+  - debug: var=myvartemplatedata
+  - debug: var=Oldlaunchtemplateversion
+  #- debug: var=myvartemplatedata.ImageId
+  #- debug: var=myvartemplatedata.BlockDeviceMappings
+  - slack:
+      token: "{{ SLACK_TOKEN }}"
+      channel: "{{ SLACK_CHANNEL }}"
+      msg: "Old-launch-template-version-number:{{ Oldlaunchtemplateversion }}"
+#  - slack:
+#      token: "{{ SLACK_TOKEN }}"
+#      channel: "{{ DEPLOYMENT_LOGS }}"
+#      msg: "Old-launch-template-version-number:{{ Oldlaunchtemplateversion }}"
+    #when: modified.failed == false
+
+  - name: create-launch-template-version
+    #command: "aws ec2 create-launch-template-version --launch-template-id {{ LAUNCH_TEMPLATE_ID }} --version-description \"Stage-Application-PHP-{{ BRANCH }}\" --source-version {{ myvarversionnumber }} --launch-template-data '{\"ImageId\":\"{{ myvarimageid }}\"}'"
+    command: "aws ec2 create-launch-template-version
+      --launch-template-id {{ LAUNCH_TEMPLATE_ID }}
+      --version-description \"{{ AMI_NAME }}-{{ BRANCH }}-{{ ansible_date_time.year }}{{ ansible_date_time.month }}{{ ansible_date_time.day }}{{ ansible_date_time.hour }}{{ ansible_date_time.minute}}\"
+      --source-version {{ Oldlaunchtemplateversion }}
+      --launch-template-data '{
+        \"TagSpecifications\":{{ myvartemplatedata.TagSpecifications | to_json }},
+        \"ImageId\":\"{{ myvartemplatedata.ImageId }}\",
+        \"BlockDeviceMappings\":{{ myvartemplatedata.BlockDeviceMappings | to_json }}}'"
+    register: launch_template_output
+  - debug: var=launch_template_output
+  - slack:
+      token: "{{ SLACK_TOKEN }}"
+      channel: "{{ SLACK_CHANNEL }}"
+      msg: "*Creating launch template version is failed* Old-launch-templateversion:-{{ Oldlaunchtemplateversion }} "
+    when: launch_template_output.failed != false
+  - fail:
+     msg: "*Please check the AWS-Console-Management*"
+    when: launch_template_output.failed != false
+
+  - set_fact:
+      varlaunch: "{{ launch_template_output.stdout | from_json }}"
+  - set_fact:
+      Newlaunchtemplateversion: "{{ varlaunch['LaunchTemplateVersion']['VersionNumber'] }}"
+
+  - debug: var=Newlaunchtemplateversion
+
+  - name: Update Launch Template with new Version
+    command: aws ec2 modify-launch-template --launch-template-id {{ LAUNCH_TEMPLATE_ID }}  --default-version {{ Newlaunchtemplateversion }}
+    register: modified
+  - debug: var=modified
+
+  - slack:
+      token: "{{ SLACK_TOKEN }}"
+      channel: "{{ SLACK_CHANNEL }}"
+      msg: "New-launch-template-version-number:{{ Newlaunchtemplateversion }}"
+    when: modified.failed == false
+#  - slack:
+#     token: "{{ SLACK_TOKEN }}"
+#     channel: "{{ DEPLOYMENT_LOGS }}"
+#     msg: "New-launch-template-version-number:{{ Newlaunchtemplateversion }}"
+#    when: modified.failed == false
+#  - slack:
+#      token: "{{ SLACK_TOKEN }}"
+#      channel: "{{ DEPLOYMENT_LOGS }}"
+#      msg: "Launch template version updation: *Success* \n"
+#    when: modified.failed == false
+  - slack:
+      token: "{{ SLACK_TOKEN }}"
+      channel: "{{ SLACK_CHANNEL }}"
+      msg: "*New launch Template updation failed*"
+    when: modified.failed != false
+  - fail:
+      msg: "Please check the AWS-Console-Management"
+    when: modified.failed != false
+
+  - debug: msg=Modified-launch-template
+
+  - name: Reading current instances in auto scaling group
+    command: aws autoscaling describe-auto-scaling-groups --auto-scaling-group-name {{ AUTOSCALING_GROUPNAME }} --region {{ AWS_REGION }}
+    register: autoscaleOUTPUT
+
+  - debug: var=autoscaleOUTPUT
+
+  - set_fact:
+       autoscalegroup: "{{ autoscaleOUTPUT.stdout | from_json }} "
+
+  - set_fact:
+       asgname: "{{ autoscalegroup.AutoScalingGroups[0].AutoScalingGroupName }}"
+  - set_fact:
+       asginstanceid: "{{ asginstanceid }} + [ '{{item.InstanceId}}' ]"
+    with_items: "{{ autoscalegroup.AutoScalingGroups[0].Instances }}"
+       #asginstanceid: "{{ autoscalegroup.AutoScalingGroups[0].Instances[0].InstanceId }}"
+
+  - debug: var=asgname
+  - debug: var=asginstanceid
+  - debug: var=Rotate
+
+  - name:  Detaching instance from auto scaling group
+    command:  aws autoscaling detach-instances --instance-ids {{ item }} --auto-scaling-group-name {{ asgname }}  --no-should-decrement-desired-capacity
+    with_items: "{{ asginstanceid }}"
+    when: Rotate == "Yes"
+    register: asgOUTPUT
+  - debug: var=asgOUTPUT
+
+  - slack:
+      token: "{{ SLACK_TOKEN }}"
+      channel: "{{ SLACK_CHANNEL }}"
+      msg: "*Detaching Instance from autoscaling failed*"
+    when: (asgOUTPUT.changed != true) and
+          (asgOUTPUT.results[0].skipped != true)
+    ignore_errors: yes
+  - fail:
+      msg: "Please check the AWS-Console-Management"
+    when: (asgOUTPUT.changed != true) and
+          (asgOUTPUT.results[0].skipped != true)
+  - slack:
+      token: "{{ SLACK_TOKEN }}"
+      channel: "{{ SLACK_CHANNEL }}"
+      msg: |
+           *New Instance not launched* Using New-launch-template-version-number:{{ Newlaunchtemplateversion }}
+            Since rotate_instance value given as *NO* in jenkins build parameter.
+    when: asgOUTPUT.results[0].skipped == true
+    ignore_errors: yes
+  - debug:
+      msg: |
+           Above task failures is ignored because rotate_instance value given as *YES* in jenkins build parameter.
+           Above task will success only if rotate_instance value given as *NO* in jenkins build parameter.
+           Please keep looking below task.
+    when: Rotate == "Yes"
+  #- name: Slack Notification
+    #slack:
+         #token: "{{ SLACK_TOKEN }}"
+         #channel: "{{ SLACK_CHANNEL }}"
+         #msg: "Rolled new instance in Autoscaling"
+
+  - name: Waiting five minutes for new instances to come online
+    wait_for: timeout=320
+    when: asgOUTPUT.changed == true
+    delegate_to: localhost
+
+  - name: Collect Running Instances List Under Auto-Scaling
+    command: aws autoscaling describe-auto-scaling-groups --auto-scaling-group-name {{ AUTOSCALING_GROUPNAME }} --region {{ AWS_REGION }}
+    when: asgOUTPUT.changed == true
+    register: asgSTATUS
+
+  - debug: var=asgSTATUS
+
+  - set_fact:
+       autoscalestate: "{{ asgSTATUS.stdout | from_json }} "
+    when: asgOUTPUT.changed == true
+
+  - set_fact:
+       HealthStatus: "{{ autoscalestate.AutoScalingGroups[0].Instances[0].HealthStatus }}"
+       LifecycleState: "{{ autoscalestate.AutoScalingGroups[0].Instances[0].LifecycleState }}"
+    when: asgOUTPUT.changed == true
+  - debug: var=HealthStatus
+  - debug: var=LifecycleState
+
+  - name:  Terminating the old instance detached from Autoscaling
+    ec2:
+      state: 'absent'
+      instance_ids:
+         - "{{ item }}"
+      region: '{{ AWS_REGION }}'
+    with_items:
+        -  "{{ asginstanceid }}"
+    when: (HealthStatus  == "Healthy") and
+          (LifecycleState == "InService")
+    ignore_errors: yes
+    register: TerminOutput
+  - debug: var=TerminOutput
+
+#  - slack:
+#      token: "{{ SLACK_TOKEN }}"
+#      channel: "{{ DEPLOYMENT_LOGS }}"
+#      msg: "Detaching & Terminating old instances: *Success*\n"
+#    when: (asgOUTPUT.results[0].failed == false) and
+#          (TerminOutput.results[0].failed == false)
+#    ignore_errors: yes
+
+  - name: Reading varnish instances in auto scaling group
+    command: aws autoscaling describe-auto-scaling-groups --auto-scaling-group-name {{ VARNISH_ASG_NAME }} --region {{ AWS_REGION }}
+    register: VarnishautoscaleOUTPUT
+  - debug: var=VarnishautoscaleOUTPUT
+  - set_fact:
+      VarnishAsgGp: "{{ VarnishautoscaleOUTPUT.stdout | from_json }} "
+  - set_fact:
+      VarnishAsgName: "{{ VarnishAsgGp.AutoScalingGroups[0].AutoScalingGroupName }}"
+  - set_fact:
+       Varnishasginstanceid: "{{ Varnishasginstanceid }} + [ '{{item.InstanceId}}' ]"
+    with_items: "{{ VarnishAsgGp.AutoScalingGroups[0].Instances }}"
+  - debug: var=VarnishAsgName
+  - debug: var=Varnishasginstanceid
+
+  - name: Gathering varnish instances Public IP
+    ec2_instance_facts:
+        instance_ids:
+           - "{{ item }}"
+    with_items:
+       -  "{{ Varnishasginstanceid }}"
+    register: varnishinstancesIP
+  - debug: var=varnishinstancesIP
+  - set_fact:
+      varnishIPs: "{{ varnishIPs }} + [ '{{item.instances[0].network_interfaces[0].association.public_ip }}' ]"
+    with_items: "{{ varnishinstancesIP.results }}"
+  - debug: var=varnishIPs
+  - name: Add Public IP to Varnish group
+    add_host:
+       hostname: "{{ item }}"
+       groups: Varnish
+    with_items: "{{ varnishIPs }}"

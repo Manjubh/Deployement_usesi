@@ -1,0 +1,39 @@
+---
+- name: CloudFront cache invalidation
+  hosts: 127.0.0.1
+  connection: local
+  gather_facts: False
+  become: yes
+  become_method: sudo
+
+  vars:
+     DeployEnv: "{{ Environment }}"
+
+  tasks:
+  - command: "aws cloudfront create-invalidation --distribution-id {{ item.id }} --paths {{ item.path }}"
+    loop:
+      - { id: "{{id_1}}", path: "{{Path_1}}"}
+
+    ignore_errors: yes
+    register: CFoutput
+  - debug: var=CFoutput
+#  - slack:
+#      token: "{{ SLACK_TOKEN }}"
+#      channel: "{{ DEPLOYMENT_LOGS }}"
+#      msg: "CloudFront Cache Invalidation: *Success*\n"
+#    when: CFoutput.results[0].failed == false
+  - slack:
+      token: "{{ SLACK_TOKEN }}"
+      channel: "{{ SLACK_CHANNEL }}"
+      msg: "*CloudFront cache invalidation failed*"
+    when: CFoutput.results[0].failed != false
+  - fail:
+      msg: "Please check the AWS-Console-Management"
+    when: CFoutput.results[0].failed != false
+
+  - name: Slack Notification
+    slack:
+         token: "{{ SLACK_TOKEN }}"
+         channel: "{{ SLACK_CHANNEL }}"
+         msg: "Branch: {{ BRANCH }}\n
+               *{{ DeployEnv }} COMPLETED*\n"

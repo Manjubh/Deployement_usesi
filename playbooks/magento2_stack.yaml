@@ -1,0 +1,41 @@
+---
+- name: Set up Magento2 stack on Ubuntu 16.04
+  hosts: Varnish
+  become: true
+
+  tasks:
+    #- name: varnish restart play
+    #include: /var/lib/jenkins/workspace/A/ansible/varnish.yml
+    - name: Restart the varnish
+      service:
+        name: varnish
+        state: restarted
+      register: restart
+    #- debug: var=restart
+
+    - name: Varnish service status
+      command: systemctl status varnish.service
+      register: statusOutput
+    - debug: var=statusOutput
+    - slack:
+        token: "{{ SLACK_TOKEN }}"
+        channel: "{{ SLACK_CHANNEL }}"
+        msg: "*VARNISH RESTART FAILED*"
+      when: restart.failed != false
+      run_once: true
+    - fail:
+        msg: "*Varnish service restart failed*"
+      when: restart.failed != false
+
+    - name: Restart nginx in frontend instance
+      service:
+        name: nginx
+        state: reloaded
+      register: reloadedFrontend
+
+
+  #  - slack:
+  #      token: "{{ SLACK_TOKEN }}"
+  #      channel: "{{ DEPLOYMENT_LOGS }}"
+  #      msg: "Varnish Restarted: *Success*\n"
+  #    when: restart.failed == false
